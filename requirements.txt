@@ -1,11 +1,11 @@
 # Core data
 pandas>=2.0
 numpy>=1.24
-pyarrow>=14.0        # parquet I/O for processed data
+pyarrow>=14.0.1      # parquet I/O for processed data (14.0.1 fixes CVE-2023-47248)
 
 # Forecasting
 lightgbm>=4.0
-scikit-learn>=1.3
+scikit-learn>=1.5    # 1.5.0 fixes CVE-2024-5206
 
 # Agent / API
 anthropic>=0.40
