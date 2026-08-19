@@ -16,9 +16,9 @@ anomalies are visible. Edit CONFIG and re-run to re-scope.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
+
+from forecasting import io
 
 # --- Scoping decision (own this) ---------------------------------------------
 CONFIG = {
@@ -27,36 +27,13 @@ CONFIG = {
     "n_skus": 50,          # top-N SKUs by total units sold in this store/category
 }
 
-RAW = Path("data/raw")
-PROCESSED = Path("data/processed")
-
-# Kaggle m5-forecasting-accuracy filenames. sales_train_evaluation.csv extends
-# validation by 28 days (d_1914..d_1941); prefer it if present.
-SALES_CANDIDATES = ["sales_train_evaluation.csv", "sales_train_validation.csv"]
-CALENDAR = "calendar.csv"
-PRICES = "sell_prices.csv"
-
-
-def _find_sales_file() -> Path:
-    for name in SALES_CANDIDATES:
-        p = RAW / name
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        f"None of {SALES_CANDIDATES} found in {RAW}/. "
-        "Download the M5 dataset from Kaggle (m5-forecasting-accuracy) and "
-        "unzip the CSVs into data/raw/."
-    )
-
 
 def main() -> None:
-    PROCESSED.mkdir(parents=True, exist_ok=True)
+    io.ensure_processed()
 
-    sales_path = _find_sales_file()
-    calendar_path = RAW / CALENDAR
-    for p in (calendar_path, RAW / PRICES):
-        if not p.exists():
-            raise FileNotFoundError(f"Expected {p}; unzip all M5 CSVs into data/raw/.")
+    sales_path = io.require_any_raw_file(io.SALES_CANDIDATES)
+    calendar_path = io.require_raw_file(io.CALENDAR)
+    io.require_raw_file(io.PRICES)
 
     print(f"Loading {sales_path.name} ...")
     sales = pd.read_csv(sales_path)
@@ -98,13 +75,12 @@ def main() -> None:
 
     long = long.sort_values(["item_id", "date"]).reset_index(drop=True)
 
-    out = PROCESSED / "sales_long.parquet"
-    long.to_parquet(out, index=False)
-    (PROCESSED / "skus.txt").write_text("\n".join(kept_skus), encoding="utf-8")
+    long.to_parquet(io.SALES_LONG, index=False)
+    io.SKUS_TXT.write_text("\n".join(kept_skus), encoding="utf-8")
 
-    print(f"\nWrote {out}  ({len(long):,} rows)")
+    print(f"\nWrote {io.SALES_LONG}  ({len(long):,} rows)")
     print(f"Date range: {long['date'].min().date()} .. {long['date'].max().date()}")
-    print(f"SKU list:   {PROCESSED / 'skus.txt'}")
+    print(f"SKU list:   {io.SKUS_TXT}")
 
 
 if __name__ == "__main__":

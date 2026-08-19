@@ -16,12 +16,11 @@ Output: data/processed/baseline_metrics.csv (per-SKU, per-method, per-horizon)
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-PROCESSED = Path("data/processed")
+from forecasting import io
+
 HORIZONS = (7, 28)
 SEASON = 7          # weekly seasonality
 STEP = 7             # spacing between rolling origins, in days
@@ -121,17 +120,16 @@ def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS)
 
 
 def main() -> None:
-    long_df = pd.read_parquet(PROCESSED / "sales_long.parquet")
-    wide = long_df.pivot(index="date", columns="item_id", values="units").sort_index()
+    wide = io.load_sales_wide()
 
     print(f"Backtesting {wide.shape[1]} SKUs over {N_ORIGINS} rolling origins "
           f"(step={STEP}d, horizons={HORIZONS})...")
     results = rolling_origin_backtest(wide)
     metrics = compute_metrics(results)
 
-    out = PROCESSED / "baseline_metrics.csv"
-    metrics.to_csv(out, index=False)
-    print(f"Wrote {out}\n")
+    io.ensure_processed()
+    metrics.to_csv(io.BASELINE_METRICS, index=False)
+    print(f"Wrote {io.BASELINE_METRICS}\n")
 
     summary = (
         metrics.groupby(["method", "horizon"])[["rmse", "mape", "wape"]]
