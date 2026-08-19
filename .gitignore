@@ -1,0 +1,36 @@
+# Data — never commit the M5 dataset (large, and Kaggle-licensed)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Models / artifacts
+*.pkl
+*.joblib
+*.lgb
+
+# Env / secrets
+.env
+kaggle.json
+
+# Node / dashboard
+node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+CLAUDE.md
