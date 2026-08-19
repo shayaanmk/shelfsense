@@ -17,12 +17,12 @@ Output: data/processed/baseline_metrics.csv (per-SKU, per-method, per-horizon)
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-PROCESSED = Path("data/processed")
+from forecasting import io
+
 HORIZONS = (7, 28)
 SEASON = 7          # weekly seasonality
 STEP = 7             # spacing between rolling origins, in days
@@ -175,29 +175,15 @@ def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS)
 
 
 def main() -> None:
-    sales_path = PROCESSED / "sales_long.parquet"
-    if not sales_path.exists():
-        raise FileNotFoundError(
-            f"{sales_path} not found; run `python -m forecasting.prepare_data` first."
-        )
-    long_df = pd.read_parquet(sales_path)
-    missing = [c for c in ("date", "item_id", "units") if c not in long_df.columns]
-    if missing:
-        raise ValueError(f"{sales_path} is missing column(s) {missing}.")
-    try:
-        wide = long_df.pivot(index="date", columns="item_id", values="units").sort_index()
-    except ValueError as exc:
-        raise ValueError(
-            f"Cannot reshape {sales_path} to one row per date: duplicate "
-            f"(date, item_id) pairs. ({exc})"
-        ) from exc
+    wide = io.load_sales_wide()
 
     print(f"Backtesting {wide.shape[1]} SKUs over {N_ORIGINS} rolling origins "
           f"(step={STEP}d, horizons={HORIZONS})...")
     results = rolling_origin_backtest(wide)
     metrics = compute_metrics(results)
 
-    out = PROCESSED / "baseline_metrics.csv"
+    io.ensure_processed()
+    out = io.baseline_metrics_path()
     metrics.to_csv(out, index=False)
     print(f"Wrote {out}\n")
 
