@@ -13,3 +13,4 @@ python-dotenv>=1.0
 
 # Dev
 pytest>=7.4
+pytest-cov>=4.1     # coverage reporting: pytest --cov=forecasting

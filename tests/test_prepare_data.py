@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +12,8 @@ import pandas as pd
 import pytest
 
 from forecasting import prepare_data
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 N_DAYS = 40
 ITEMS = [f"FOODS_1_{i:03d}" for i in range(3)]
@@ -107,3 +112,174 @@ def test_unknown_store_lists_available_values(dataset, monkeypatch):
     monkeypatch.setitem(prepare_data.CONFIG, "store", "ZZ_9")
     with pytest.raises(ValueError, match="Available categories"):
         prepare_data.main()
+
+
+# --- Sales-file discovery and the reshaping done by main() --------------------
+
+DAY_COLS = ["d_1", "d_2", "d_3"]
+
+
+def _small_sales() -> pd.DataFrame:
+    """Two FOODS/CA_1 SKUs with different volumes, plus rows that must be filtered out."""
+    rows = [
+        ("FOODS_1_001_CA_1_evaluation", "FOODS_1_001", "FOODS_1", "FOODS", "CA_1", "CA", 5, 5, 5),
+        ("FOODS_1_002_CA_1_evaluation", "FOODS_1_002", "FOODS_1", "FOODS", "CA_1", "CA", 1, 0, 2),
+        ("FOODS_1_003_CA_1_evaluation", "FOODS_1_003", "FOODS_1", "FOODS", "CA_1", "CA", 0, 0, 1),
+        ("FOODS_1_004_CA_2_evaluation", "FOODS_1_004", "FOODS_1", "FOODS", "CA_2", "CA", 9, 9, 9),
+        ("HOBBIES_1_1_CA_1_evaluation", "HOBBIES_1_1", "HOBBIES_1", "HOBBIES", "CA_1", "CA", 7, 7, 7),
+    ]
+    return pd.DataFrame(rows, columns=[*prepare_data.SALES_ID_COLS, *DAY_COLS])
+
+
+def _small_calendar() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "d": DAY_COLS,
+            "date": ["2011-01-29", "2011-01-30", "2011-01-31"],
+            "wm_yr_wk": [11101, 11101, 11101],
+            "wday": [1, 2, 3],
+            "month": [1, 1, 1],
+            "year": [2011, 2011, 2011],
+            "event_name_1": [None, "SuperBowl", None],
+            "event_type_1": [None, "Sporting", None],
+            "snap_CA": [0, 1, 1],
+            "snap_TX": [0, 0, 1],
+            "snap_WI": [1, 1, 0],
+        }
+    )
+
+
+@pytest.fixture
+def small_dataset(tmp_path, monkeypatch):
+    """Repoint the module's paths at a 3-day synthetic slice and write it out."""
+    raw = tmp_path / "raw"
+    processed = tmp_path / "processed"
+    raw.mkdir()
+    monkeypatch.setattr(prepare_data, "RAW", raw)
+    monkeypatch.setattr(prepare_data, "PROCESSED", processed)
+
+    _small_sales().to_csv(raw / "sales_train_evaluation.csv", index=False)
+    _small_calendar().to_csv(raw / "calendar.csv", index=False)
+    pd.DataFrame({"store_id": ["CA_1"], "item_id": ["FOODS_1_001"]}).to_csv(
+        raw / "sell_prices.csv", index=False
+    )
+    return raw, processed
+
+
+class TestFindSalesFile:
+    def test_prefers_evaluation_over_validation(self, small_dataset):
+        raw, _ = small_dataset
+        (raw / "sales_train_validation.csv").touch()
+        assert prepare_data._find_sales_file().name == "sales_train_evaluation.csv"
+
+    def test_falls_back_to_validation(self, small_dataset):
+        raw, _ = small_dataset
+        (raw / "sales_train_evaluation.csv").unlink()
+        (raw / "sales_train_validation.csv").touch()
+        assert prepare_data._find_sales_file().name == "sales_train_validation.csv"
+
+    def test_missing_sales_file_raises(self, small_dataset):
+        raw, _ = small_dataset
+        (raw / "sales_train_evaluation.csv").unlink()
+        with pytest.raises(FileNotFoundError, match="Download the M5 dataset"):
+            prepare_data._find_sales_file()
+
+
+class TestReshaping:
+    def test_writes_long_parquet_and_sku_list(self, small_dataset, monkeypatch, capsys):
+        _, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 2)
+
+        prepare_data.main()
+
+        long = pd.read_parquet(processed / "sales_long.parquet")
+        # top 2 SKUs of the FOODS/CA_1 slice, one row per (item, day)
+        assert sorted(long["item_id"].unique()) == ["FOODS_1_001", "FOODS_1_002"]
+        assert len(long) == 2 * len(DAY_COLS)
+        assert long["date"].dtype.kind == "M"
+        assert long["date"].min() == pd.Timestamp("2011-01-29")
+        assert long[["item_id", "date"]].equals(
+            long.sort_values(["item_id", "date"]).reset_index(drop=True)[["item_id", "date"]]
+        )
+        skus = (processed / "skus.txt").read_text(encoding="utf-8").splitlines()
+        assert skus == ["FOODS_1_001", "FOODS_1_002"]
+        assert "Kept 2 SKUs" in capsys.readouterr().out
+
+    def test_snap_column_is_selected_by_store_and_renamed(self, small_dataset, monkeypatch):
+        _, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 1)
+
+        prepare_data.main()
+
+        long = pd.read_parquet(processed / "sales_long.parquet").sort_values("date")
+        assert "snap" in long.columns
+        assert not [c for c in long.columns if c.startswith("snap_")]
+        assert long["snap"].tolist() == [0, 1, 1]
+        assert long["event_name_1"].tolist()[1] == "SuperBowl"
+
+    def test_units_survive_the_wide_to_long_melt(self, small_dataset, monkeypatch):
+        _, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 2)
+
+        prepare_data.main()
+
+        by_item = pd.read_parquet(processed / "sales_long.parquet").groupby("item_id")["units"].sum()
+        assert by_item["FOODS_1_001"] == 15
+        assert by_item["FOODS_1_002"] == 3
+
+    def test_scoping_to_another_store(self, small_dataset, monkeypatch, capsys):
+        _, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "store", "CA_2")
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 5)
+
+        prepare_data.main()
+
+        long = pd.read_parquet(processed / "sales_long.parquet")
+        assert long["item_id"].unique().tolist() == ["FOODS_1_004"]
+        # fewer SKUs than requested is a warning, not a failure
+        assert "only 1 exist" in capsys.readouterr().err
+
+    def test_empty_slice_raises(self, small_dataset, monkeypatch):
+        monkeypatch.setitem(prepare_data.CONFIG, "store", "WI_3")
+        with pytest.raises(ValueError, match="No rows for category=FOODS store=WI_3"):
+            prepare_data.main()
+
+    @pytest.mark.parametrize("missing", ["calendar.csv", "sell_prices.csv"])
+    def test_missing_companion_csv_raises(self, small_dataset, missing):
+        raw, _ = small_dataset
+        (raw / missing).unlink()
+        with pytest.raises(FileNotFoundError, match="unzip all M5 CSVs"):
+            prepare_data.main()
+
+    def test_creates_processed_directory(self, small_dataset, monkeypatch):
+        _, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 1)
+        assert not processed.exists()
+
+        prepare_data.main()
+
+        assert processed.is_dir()
+
+
+class TestGuardRailMessages:
+    def test_sales_file_without_day_columns_is_rejected(self, small_dataset):
+        raw, _ = small_dataset
+        _small_sales().drop(columns=DAY_COLS).to_csv(
+            raw / "sales_train_evaluation.csv", index=False
+        )
+        with pytest.raises(ValueError, match=r"no d_\* day columns"):
+            prepare_data.main()
+
+
+def test_module_entrypoint_exits_nonzero_with_a_readable_error(tmp_path):
+    """`python -m forecasting.prepare_data` maps the guard rails onto exit code 1."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "forecasting.prepare_data"],
+        cwd=tmp_path,  # no data/raw here
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert proc.returncode == 1
+    assert proc.stderr.startswith("ERROR: ")
+    assert "Download the M5 dataset" in proc.stderr
