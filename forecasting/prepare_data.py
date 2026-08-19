@@ -91,7 +91,14 @@ def main() -> None:
     day_cols = [c for c in sales.columns if c.startswith("d_")]
     if not day_cols:
         raise ValueError(f"{sales_path} has no d_* day columns to melt.")
-    sales["total_units"] = sales[day_cols].sum(axis=1)
+    units = sales[day_cols].apply(pd.to_numeric, errors="coerce")
+    n_bad_units = int(units.isna().to_numpy().sum())
+    if n_bad_units:
+        raise ValueError(
+            f"{n_bad_units} non-numeric unit value(s) in {sales_path.name}; "
+            "refusing to build a parquet with missing sales."
+        )
+    sales = sales.assign(total_units=units.sum(axis=1))
     top = sales.nlargest(CONFIG["n_skus"], "total_units")
     kept_skus = top["item_id"].tolist()
     if len(kept_skus) < CONFIG["n_skus"]:
@@ -110,6 +117,7 @@ def main() -> None:
         var_name="d",
         value_name="units",
     )
+    long["units"] = pd.to_numeric(long["units"])
 
     # Join calendar for real dates + event/SNAP context.
     calendar = pd.read_csv(calendar_path)
@@ -126,14 +134,6 @@ def main() -> None:
         )
     long["date"] = pd.to_datetime(long["date"], errors="raise")
     long = long.rename(columns={snap_col: "snap"})
-
-    long["units"] = pd.to_numeric(long["units"], errors="coerce")
-    n_bad_units = int(long["units"].isna().sum())
-    if n_bad_units:
-        raise ValueError(
-            f"{n_bad_units} non-numeric unit value(s) in {sales_path.name}; "
-            "refusing to write a parquet with missing sales."
-        )
 
     long = long.sort_values(["item_id", "date"]).reset_index(drop=True)
 
