@@ -16,6 +16,7 @@ Output: data/processed/baseline_metrics.csv (per-SKU, per-method, per-horizon)
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -29,11 +30,31 @@ N_ORIGINS = 8         # number of backtest origins (8 weeks of rolling-origin co
 
 
 def naive_forecast(history: np.ndarray, horizon: int) -> np.ndarray:
-    return np.full(horizon, history[-1], dtype=float)
+    if horizon < 1:
+        raise ValueError(f"horizon must be >= 1, got {horizon}.")
+    if history.size == 0:
+        raise ValueError("naive_forecast needs at least one observation.")
+    last = history[-1]
+    if not np.isfinite(last):
+        raise ValueError(f"last observation is {last}; cannot forecast from a gap.")
+    return np.full(horizon, last, dtype=float)
 
 
 def seasonal_naive_forecast(history: np.ndarray, horizon: int, season: int = SEASON) -> np.ndarray:
+    if horizon < 1:
+        raise ValueError(f"horizon must be >= 1, got {horizon}.")
+    if season < 1:
+        raise ValueError(f"season must be >= 1, got {season}.")
+    if history.size < season:
+        raise ValueError(
+            f"seasonal_naive_forecast needs at least season={season} observations, "
+            f"got {history.size}; a shorter history would yield a truncated forecast."
+        )
     last_season = history[-season:]
+    if not np.isfinite(last_season).all():
+        raise ValueError(
+            f"last {season} observations contain non-finite values; cannot forecast from a gap."
+        )
     reps = int(np.ceil(horizon / season))
     return np.tile(last_season, reps)[:horizon].astype(float)
 
@@ -48,12 +69,30 @@ def rolling_origin_backtest(
     """For each origin and SKU, forecast max(horizons) days ahead and record
     actual vs. predicted for every day of the horizon. compute_metrics()
     then slices by day_offset to score the 7-day and 28-day cutoffs."""
+    if not horizons:
+        raise ValueError("horizons must not be empty.")
+    if wide.empty:
+        raise ValueError("No sales data to backtest: the wide frame is empty.")
+    if wide.isna().to_numpy().any():
+        n_missing = int(wide.isna().to_numpy().sum())
+        gappy = wide.columns[wide.isna().any()].tolist()
+        raise ValueError(
+            f"{n_missing} missing (date, SKU) cell(s) across {len(gappy)} SKU(s) "
+            f"(e.g. {gappy[:5]}). Forecasts and metrics over these would silently be NaN; "
+            "fix the upstream data (re-run forecasting.prepare_data) first."
+        )
+
     dates = wide.index
     max_h = max(horizons)
 
     last_origin_idx = len(dates) - 1 - max_h
-    if last_origin_idx - step * (n_origins - 1) < season:
-        raise ValueError("Not enough history for the requested origins/horizon/season.")
+    first_origin_idx = last_origin_idx - step * (n_origins - 1)
+    if first_origin_idx < season - 1:
+        raise ValueError(
+            f"Not enough history: {len(dates)} days cannot cover {n_origins} origins "
+            f"(step={step}) at horizon {max_h} with season {season}; "
+            f"need at least {season + step * (n_origins - 1) + max_h} days."
+        )
     origin_idxs = [last_origin_idx - step * i for i in range(n_origins)]
 
     records = []
@@ -62,6 +101,11 @@ def rolling_origin_backtest(
         for item in wide.columns:
             hist = wide[item].to_numpy()[: idx + 1]
             future_actual = wide[item].to_numpy()[idx + 1 : idx + 1 + max_h]
+            if future_actual.size != max_h:
+                raise ValueError(
+                    f"Origin {origin_date} leaves only {future_actual.size} of {max_h} "
+                    f"actual days for {item}."
+                )
             naive_pred = naive_forecast(hist, max_h)
             sn_pred = seasonal_naive_forecast(hist, max_h, season)
             for day_offset in range(max_h):
@@ -87,13 +131,23 @@ def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS)
     (sum of errors / sum of actuals) doesn't have this problem and is
     reported alongside as the more robust number for these SKUs.
     """
+    if results.empty:
+        raise ValueError("No backtest results to score.")
+
     rows = []
     for horizon in horizons:
         subset = results[results["day_offset"] <= horizon]
+        if subset.empty:
+            raise ValueError(f"No backtest rows within horizon {horizon}.")
         for method in ("naive_pred", "seasonal_naive_pred"):
             for item_id, g in subset.groupby("item_id"):
-                actual = g["actual"].to_numpy()
-                pred = g[method].to_numpy()
+                actual = g["actual"].to_numpy(dtype=float)
+                pred = g[method].to_numpy(dtype=float)
+                if not (np.isfinite(actual).all() and np.isfinite(pred).all()):
+                    raise ValueError(
+                        f"Non-finite actuals or {method} values for {item_id} "
+                        f"at horizon {horizon}; metrics would be NaN."
+                    )
                 err = actual - pred
                 nonzero = actual != 0
 
@@ -121,8 +175,22 @@ def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS)
 
 
 def main() -> None:
-    long_df = pd.read_parquet(PROCESSED / "sales_long.parquet")
-    wide = long_df.pivot(index="date", columns="item_id", values="units").sort_index()
+    sales_path = PROCESSED / "sales_long.parquet"
+    if not sales_path.exists():
+        raise FileNotFoundError(
+            f"{sales_path} not found; run `python -m forecasting.prepare_data` first."
+        )
+    long_df = pd.read_parquet(sales_path)
+    missing = [c for c in ("date", "item_id", "units") if c not in long_df.columns]
+    if missing:
+        raise ValueError(f"{sales_path} is missing column(s) {missing}.")
+    try:
+        wide = long_df.pivot(index="date", columns="item_id", values="units").sort_index()
+    except ValueError as exc:
+        raise ValueError(
+            f"Cannot reshape {sales_path} to one row per date: duplicate "
+            f"(date, item_id) pairs. ({exc})"
+        ) from exc
 
     print(f"Backtesting {wide.shape[1]} SKUs over {N_ORIGINS} rolling origins "
           f"(step={STEP}d, horizons={HORIZONS})...")
@@ -149,4 +217,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
