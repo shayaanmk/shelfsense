@@ -190,11 +190,12 @@ class TestCliPipeline:
         assert f"Backtesting {len(KEPT_SKUS)} SKUs" in run.stdout
         assert "Summary across SKUs" in run.stdout
 
+        # literal names: other tools (and the README) refer to these by hand
         processed = tmp_path / "data" / "processed"
         assert {p.name for p in processed.iterdir()} == {
-            io.SALES_LONG_NAME,
-            io.SKUS_NAME,
-            io.BASELINE_METRICS_NAME,
+            "sales_long.parquet",
+            "skus.txt",
+            "baseline_metrics.csv",
         }
 
     def test_metrics_are_reproducible_across_runs(self, tmp_path):
