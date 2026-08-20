@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecasting import baseline
+from forecasting import baseline, io
 from forecasting.baseline import (
     compute_metrics,
     naive_forecast,
@@ -229,7 +229,7 @@ class TestMain:
         processed = tmp_path / "processed"
         processed.mkdir()
         long_df.to_parquet(processed / "sales_long.parquet", index=False)
-        monkeypatch.setattr(baseline, "PROCESSED", processed)
+        monkeypatch.setattr(io, "PROCESSED", processed)
 
         baseline.main()
 
@@ -242,13 +242,13 @@ class TestMain:
         assert "Summary across SKUs" in out
 
     def test_missing_parquet_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(baseline, "PROCESSED", tmp_path)
+        monkeypatch.setattr(io, "PROCESSED", tmp_path)
         with pytest.raises(FileNotFoundError, match="run `python -m forecasting.prepare_data`"):
             baseline.main()
 
     def test_missing_columns_raise(self, tmp_path, monkeypatch):
         pd.DataFrame({"date": [1], "units": [2]}).to_parquet(tmp_path / "sales_long.parquet")
-        monkeypatch.setattr(baseline, "PROCESSED", tmp_path)
+        monkeypatch.setattr(io, "PROCESSED", tmp_path)
         with pytest.raises(ValueError, match=r"missing column\(s\) \['item_id'\]"):
             baseline.main()
 
@@ -256,7 +256,7 @@ class TestMain:
         pd.DataFrame(
             {"date": ["2015-01-01"] * 2, "item_id": ["A", "A"], "units": [1.0, 2.0]}
         ).to_parquet(tmp_path / "sales_long.parquet")
-        monkeypatch.setattr(baseline, "PROCESSED", tmp_path)
+        monkeypatch.setattr(io, "PROCESSED", tmp_path)
         with pytest.raises(ValueError, match="duplicate"):
             baseline.main()
 

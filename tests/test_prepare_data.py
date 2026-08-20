@@ -166,23 +166,35 @@ def small_dataset(tmp_path, monkeypatch):
     return raw, processed
 
 
-class TestFindSalesFile:
-    def test_prefers_evaluation_over_validation(self, small_dataset):
-        raw, _ = small_dataset
-        (raw / "sales_train_validation.csv").touch()
-        assert prepare_data._find_sales_file().name == "sales_train_evaluation.csv"
+class TestSalesFileSelection:
+    """Which of the two M5 sales releases main() actually reads."""
 
-    def test_falls_back_to_validation(self, small_dataset):
-        raw, _ = small_dataset
-        (raw / "sales_train_evaluation.csv").unlink()
-        (raw / "sales_train_validation.csv").touch()
-        assert prepare_data._find_sales_file().name == "sales_train_validation.csv"
+    def test_prefers_evaluation_over_validation(self, small_dataset, monkeypatch):
+        raw, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 1)
+        # an older release naming its SKUs differently; the evaluation file must win
+        _small_sales().assign(item_id=lambda df: df["item_id"] + "_OLD").to_csv(
+            raw / "sales_train_validation.csv", index=False
+        )
+
+        prepare_data.main()
+
+        assert (processed / "skus.txt").read_text(encoding="utf-8").splitlines() == ["FOODS_1_001"]
+
+    def test_falls_back_to_validation(self, small_dataset, monkeypatch):
+        raw, processed = small_dataset
+        monkeypatch.setitem(prepare_data.CONFIG, "n_skus", 1)
+        (raw / "sales_train_evaluation.csv").rename(raw / "sales_train_validation.csv")
+
+        prepare_data.main()
+
+        assert (processed / "skus.txt").read_text(encoding="utf-8").splitlines() == ["FOODS_1_001"]
 
     def test_missing_sales_file_raises(self, small_dataset):
         raw, _ = small_dataset
         (raw / "sales_train_evaluation.csv").unlink()
         with pytest.raises(FileNotFoundError, match="Download the M5 dataset"):
-            prepare_data._find_sales_file()
+            prepare_data.main()
 
 
 class TestReshaping:
@@ -248,7 +260,7 @@ class TestReshaping:
     def test_missing_companion_csv_raises(self, small_dataset, missing):
         raw, _ = small_dataset
         (raw / missing).unlink()
-        with pytest.raises(FileNotFoundError, match="unzip all M5 CSVs"):
+        with pytest.raises(FileNotFoundError, match="unzip the CSVs into data/raw/"):
             prepare_data.main()
 
     def test_creates_processed_directory(self, small_dataset, monkeypatch):

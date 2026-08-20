@@ -12,6 +12,8 @@ venv/
 env/
 *.egg-info/
 .pytest_cache/
+.coverage
+htmlcov/
 .ipynb_checkpoints/
 
 # Models / artifacts

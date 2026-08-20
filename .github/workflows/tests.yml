@@ -14,5 +14,5 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install pandas numpy pyarrow pytest pytest-cov
+      - run: pip install -r requirements.txt
       - run: pytest --cov=forecasting --cov-report=term-missing
