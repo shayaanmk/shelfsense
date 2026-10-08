@@ -26,6 +26,7 @@ PRICES = "sell_prices.csv"
 SALES_LONG_NAME = "sales_long.parquet"
 SKUS_NAME = "skus.txt"
 BASELINE_METRICS_NAME = "baseline_metrics.csv"
+INVENTORY_NAME = "inventory.parquet"
 
 _DOWNLOAD_HINT = (
     "Download the M5 dataset from Kaggle (m5-forecasting-accuracy) and unzip "
@@ -91,3 +92,36 @@ def load_sales_wide(values: str = "units", processed: Path | None = None) -> pd.
             f"Cannot reshape {sales_long_path(processed)} to one row per date: duplicate "
             f"(date, item_id) pairs. ({exc})"
         ) from exc
+
+
+def load_future_calendar(store: str, raw: Path | None = None) -> pd.DataFrame:
+    """Date-indexed wday/month/event_type_1/snap, covering calendar.csv's FULL
+    range -- which M5 ships ~28 days past the sales file's last day, for
+    exactly the out-of-sample forecasting this feeds (see
+    forecasting.lgbm_model / tools.get_forecast). sales_long.parquet's joined
+    calendar only covers days with a matching sales row, so it can't be used
+    for this."""
+    path = require_raw_file(CALENDAR, raw)
+    calendar = pd.read_csv(path)
+    snap_col = f"snap_{store[:2]}"
+    missing = [c for c in ("date", "wday", "month", "event_type_1", snap_col) if c not in calendar.columns]
+    if missing:
+        raise ValueError(f"{path} is missing column(s) {missing}.")
+    calendar["date"] = pd.to_datetime(calendar["date"])
+    calendar = calendar.rename(columns={snap_col: "snap"}).set_index("date").sort_index()
+    return calendar[["wday", "month", "event_type_1", "snap"]]
+
+
+def inventory_path(processed: Path | None = None) -> Path:
+    return (PROCESSED if processed is None else processed) / INVENTORY_NAME
+
+
+def load_inventory(processed: Path | None = None) -> pd.DataFrame:
+    path = inventory_path(processed)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found; run `python -m tools.inventory_sim` first.")
+    inv = pd.read_parquet(path)
+    missing = [c for c in ("date", "item_id", "on_hand", "stockout") if c not in inv.columns]
+    if missing:
+        raise ValueError(f"{path} is missing column(s) {missing}.")
+    return inv

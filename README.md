@@ -1,23 +1,27 @@
 # shelfsense
 
-Supply chain demand forecasting + an agent copilot that answers a planner's
-natural-language questions grounded in real forecast/inventory/sales data.
+Supply chain demand forecasting with two agents on top: an **interactive
+copilot** that answers a planner's natural-language questions grounded in
+real forecast/inventory/sales data, and an **autonomous restocking agent**
+that decides order quantity and supplier on a schedule, with no human in
+the loop before it fires.
 
 See [CLAUDE.md](CLAUDE.md) for the full problem statement, architecture, and build plan.
 
 ## Status
 
-**Step 1 — scope + data (in progress).** Repo scaffolding and the M5 subsetting
-script are in place. Next: install Python, drop the dataset in, and run the prep script.
+Steps 1–9 of the build plan are done: data scoping, forecasting baseline +
+LightGBM model, the eval harness (anomaly-injection precision/recall +
+grounded-explanation check), the copilot's tool interface and agent loop,
+the commerce simulation, the restocking agent, and this dashboard. Steps 10
+(Azure deployment) and 11 (write-up) are next.
 
 ## Getting started
 
 ### 1. Install Python
 
-Python is not yet installed on this machine (the `python` command currently
-resolves to a Windows Store stub). Install Python 3.11+ from
-[python.org](https://www.python.org/downloads/) or via `winget install Python.Python.3.12`,
-then reopen your terminal.
+Install Python 3.11+ from [python.org](https://www.python.org/downloads/)
+or via `winget install Python.Python.3.12`, then reopen your terminal.
 
 ### 2. Create a virtual environment and install deps
 
@@ -39,25 +43,81 @@ unzip these CSVs into `data/raw/`:
 
 `data/raw/` is git-ignored — the dataset never gets committed.
 
-### 4. Subset and reshape
+### 4. Build the data + model pipeline
 
 ```powershell
-python -m forecasting.prepare_data
+python -m forecasting.prepare_data      # subset M5 to one category/store, ~50 SKUs
+python -m forecasting.baseline          # naive + seasonal-naive baselines, backtested
+python -m forecasting.lgbm_model        # LightGBM model, trained + backtested
+python -m tools.inventory_sim           # retrospective (s,S) inventory sim, backs detect_anomalies' stockout signal
 ```
 
-Writes `data/processed/sales_long.parquet` (long-format sales for one
-category/store, top-50 SKUs) and `data/processed/skus.txt`. Edit the `CONFIG`
-block at the top of [forecasting/prepare_data.py](forecasting/prepare_data.py)
-to re-scope (category / store / SKU count).
+Each writes its output to `data/processed/`. Re-run in order after changing
+`CONFIG` in [forecasting/prepare_data.py](forecasting/prepare_data.py) (category / store / SKU count).
+
+### 5. Set up the copilot
+
+The copilot calls the Claude API (`agent/copilot.py`). Add a `.env` file in
+the repo root:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Then try it:
+
+```powershell
+python -m agent.copilot "Is FOODS_1_018 at risk of stocking out soon?"
+```
+
+### 6. Run the evaluation harness
+
+```powershell
+python -m eval.anomaly_eval       # free -- synthetic anomaly injection, precision/recall
+python -m eval.grounding_eval     # costs real API calls (small benchmark, Haiku by default)
+```
+
+### 7. Run the commerce simulation + restocking agent
+
+```powershell
+python -m tools.inventory_sim                          # (if not already run above)
+python -c "from commerce import inventory; inventory.reset()"
+python -m agent.restock_agent                           # decide once for the current simulated day
+python -m eval.restock_eval                              # restock_agent vs. naive baseline, simulated profit
+```
+
+### 8. Run the dashboard
+
+Backend (FastAPI):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+uvicorn dashboard.backend.main:app --reload --port 8000
+```
+
+Frontend (React + Vite), in a second terminal:
+
+```powershell
+cd dashboard\frontend
+npm install
+npm run dev
+```
+
+Open the URL Vite prints (typically http://localhost:5173).
 
 ## Layout
 
 ```
-data/          raw + processed M5 data (git-ignored)
-forecasting/   feature engineering, baseline + LightGBM model, backtesting
-tools/         get_forecast(), get_recent_sales(), get_inventory_level(), detect_anomalies()
-agent/         hand-written plan-act-observe loop, calls tools/
-eval/          synthetic anomaly injection, detection metrics, grounded-explanation judge
-dashboard/     React frontend: forecast chart, anomaly flags, chat panel
-deploy/        Azure Functions + App Service config
+data/            raw + processed M5 data (git-ignored)
+forecasting/     feature engineering, baseline + LightGBM model, backtesting
+tools/           get_forecast(), get_recent_sales(), get_inventory_level(),
+                 detect_anomalies() -- real functions over the data, not mocks
+commerce/        pos.py, inventory.py, suppliers.py, orders.py -- the single-SKU
+                 commerce simulation the restocking agent operates on
+agent/           copilot.py (interactive, request/response) and
+                 restock_agent.py (autonomous, schedule-triggered)
+eval/            synthetic anomaly injection + precision/recall, grounded-explanation
+                 check, restock_agent-vs-naive-baseline profit comparison
+dashboard/       backend/ (FastAPI) + frontend/ (React + Vite)
+deploy/          Azure Functions + App Service config
 ```

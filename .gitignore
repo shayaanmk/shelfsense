@@ -4,6 +4,11 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
+# Commerce simulation state (inventory ledger, PO ledger, sim clock) -- mutable
+# runtime state, not reproducible pipeline output; regenerates via commerce.simulate.reset()
+data/commerce/*
+!data/commerce/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

@@ -59,6 +59,25 @@ def seasonal_naive_forecast(history: np.ndarray, horizon: int, season: int = SEA
     return np.tile(last_season, reps)[:horizon].astype(float)
 
 
+def origin_indices(n_dates: int, max_horizon: int, step: int, n_origins: int, min_history: int) -> list[int]:
+    """Rolling-origin indices ending as late as the data allows.
+
+    Shared by rolling_origin_backtest and forecasting.lgbm_model's time split
+    so both draw origins from the identical index math -- the LightGBM
+    model's test set lines up exactly with this module's, SKU for SKU and
+    horizon for horizon.
+    """
+    last_origin_idx = n_dates - 1 - max_horizon
+    first_origin_idx = last_origin_idx - step * (n_origins - 1)
+    if first_origin_idx < min_history - 1:
+        raise ValueError(
+            f"Not enough history: {n_dates} days cannot cover {n_origins} origins "
+            f"(step={step}) at horizon {max_horizon} with min_history {min_history}; "
+            f"need at least {min_history + step * (n_origins - 1) + max_horizon} days."
+        )
+    return [last_origin_idx - step * i for i in range(n_origins)]
+
+
 def rolling_origin_backtest(
     wide: pd.DataFrame,
     horizons: tuple[int, ...] = HORIZONS,
@@ -84,16 +103,7 @@ def rolling_origin_backtest(
 
     dates = wide.index
     max_h = max(horizons)
-
-    last_origin_idx = len(dates) - 1 - max_h
-    first_origin_idx = last_origin_idx - step * (n_origins - 1)
-    if first_origin_idx < season - 1:
-        raise ValueError(
-            f"Not enough history: {len(dates)} days cannot cover {n_origins} origins "
-            f"(step={step}) at horizon {max_h} with season {season}; "
-            f"need at least {season + step * (n_origins - 1) + max_h} days."
-        )
-    origin_idxs = [last_origin_idx - step * i for i in range(n_origins)]
+    origin_idxs = origin_indices(len(dates), max_h, step, n_origins, season)
 
     records = []
     for idx in origin_idxs:
@@ -122,8 +132,19 @@ def rolling_origin_backtest(
     return pd.DataFrame(records)
 
 
-def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS) -> pd.DataFrame:
+def compute_metrics(
+    results: pd.DataFrame,
+    horizons: tuple[int, ...] = HORIZONS,
+    pred_cols: tuple[str, ...] = ("naive_pred", "seasonal_naive_pred"),
+) -> pd.DataFrame:
     """Per-SKU RMSE/MAPE/WAPE for each method at each horizon cutoff.
+
+    `pred_cols` names the prediction column(s) in `results` to score; each
+    must end in "_pred" (the method name reported is that column with the
+    suffix stripped). Defaults to this module's two baselines, but any model
+    that produces a (item_id, day_offset, actual, <method>_pred) table --
+    forecasting.lgbm_model included -- can reuse this rather than
+    reimplementing the MAPE/WAPE zero-handling.
 
     MAPE is undefined at actual=0, which is common in M5 (intermittent
     demand) -- those rows are excluded and counted in n_zero_actual so the
@@ -139,7 +160,7 @@ def compute_metrics(results: pd.DataFrame, horizons: tuple[int, ...] = HORIZONS)
         subset = results[results["day_offset"] <= horizon]
         if subset.empty:
             raise ValueError(f"No backtest rows within horizon {horizon}.")
-        for method in ("naive_pred", "seasonal_naive_pred"):
+        for method in pred_cols:
             for item_id, g in subset.groupby("item_id"):
                 actual = g["actual"].to_numpy(dtype=float)
                 pred = g[method].to_numpy(dtype=float)

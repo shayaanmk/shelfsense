@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecasting import prepare_data
+from forecasting import io, prepare_data
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -166,23 +166,25 @@ def small_dataset(tmp_path, monkeypatch):
     return raw, processed
 
 
-class TestFindSalesFile:
+class TestRequireAnySalesFile:
+    """Sales-file discovery now lives in io.require_any_raw_file; prepare_data just calls it."""
+
     def test_prefers_evaluation_over_validation(self, small_dataset):
         raw, _ = small_dataset
         (raw / "sales_train_validation.csv").touch()
-        assert prepare_data._find_sales_file().name == "sales_train_evaluation.csv"
+        assert io.require_any_raw_file(io.SALES_CANDIDATES, raw).name == "sales_train_evaluation.csv"
 
     def test_falls_back_to_validation(self, small_dataset):
         raw, _ = small_dataset
         (raw / "sales_train_evaluation.csv").unlink()
         (raw / "sales_train_validation.csv").touch()
-        assert prepare_data._find_sales_file().name == "sales_train_validation.csv"
+        assert io.require_any_raw_file(io.SALES_CANDIDATES, raw).name == "sales_train_validation.csv"
 
     def test_missing_sales_file_raises(self, small_dataset):
         raw, _ = small_dataset
         (raw / "sales_train_evaluation.csv").unlink()
         with pytest.raises(FileNotFoundError, match="Download the M5 dataset"):
-            prepare_data._find_sales_file()
+            io.require_any_raw_file(io.SALES_CANDIDATES, raw)
 
 
 class TestReshaping:
@@ -248,7 +250,7 @@ class TestReshaping:
     def test_missing_companion_csv_raises(self, small_dataset, missing):
         raw, _ = small_dataset
         (raw / missing).unlink()
-        with pytest.raises(FileNotFoundError, match="unzip all M5 CSVs"):
+        with pytest.raises(FileNotFoundError, match="Download the M5 dataset"):
             prepare_data.main()
 
     def test_creates_processed_directory(self, small_dataset, monkeypatch):

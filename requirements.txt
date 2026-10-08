@@ -6,10 +6,16 @@ pyarrow>=14.0.1      # parquet I/O for processed data (14.0.1 fixes CVE-2023-472
 # Forecasting
 lightgbm>=4.0
 scikit-learn>=1.5    # 1.5.0 fixes CVE-2024-5206
+scipy>=1.11          # newsvendor normal-loss function in agent/restock_agent.py (was a transitive dep of sklearn; now used directly)
 
 # Agent / API
 anthropic>=0.40
 python-dotenv>=1.0
+pip-system-certs>=4.0  # use the OS trust store for TLS; certifi's bundle alone can't verify api.anthropic.com on some machines
+
+# Dashboard backend (dashboard/backend/)
+fastapi>=0.110
+uvicorn[standard]>=0.29
 
 # Dev
 pytest>=7.4
